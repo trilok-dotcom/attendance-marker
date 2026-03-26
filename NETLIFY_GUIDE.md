@@ -7,10 +7,10 @@ Your frontend is fully configured and ready to be deployed to Netlify! I have ad
 1. Create a GitHub repository and push this entire `barcode-attendance-system` folder to it.
 2. Log into [Netlify](https://www.netlify.com/), click **Add new site** > **Import an existing project**.
 3. Connect your GitHub account and select your repository.
-4. **Important Build Settings:**
+4. **Important Build Settings (These should be auto-detected by `netlify.toml`):**
    * **Base directory:** `frontend`
    * **Build command:** `npm run build`
-   * **Publish directory:** `frontend/dist`
+   * **Publish directory:** `dist`
 5. Click **Deploy Site**! Your frontend will instantly be live on a public HTTPS URL.
 
 ### ⚠️ Critical Backend Step ⚠️
