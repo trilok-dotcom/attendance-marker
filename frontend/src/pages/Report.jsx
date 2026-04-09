@@ -15,7 +15,7 @@ const Report = () => {
             try {
                 const { data } = await api.get(`/attendance/report/${sessionId}`);
                 setReport(data);
-            } catch (err) {
+            } catch {
                 setError('Failed to load report');
             } finally {
                 setLoading(false);

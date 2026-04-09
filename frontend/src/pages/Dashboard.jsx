@@ -26,7 +26,7 @@ const Dashboard = () => {
                 } else {
                     localStorage.removeItem('currentSessionId');
                 }
-            } catch (err) {
+            } catch {
                 console.error("Failed to fetch active session");
             } finally {
                 setCheckingSession(false);
@@ -61,7 +61,7 @@ const Dashboard = () => {
             await api.post('/attendance/end-session', { sessionId: activeSession._id });
             localStorage.removeItem('currentSessionId');
             navigate(`/report/${activeSession._id}`);
-        } catch (err) {
+        } catch {
             alert('Failed to end session');
             setLoading(false);
         }

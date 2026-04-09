@@ -44,7 +44,7 @@ const Scanner = () => {
                 if (isScanningRef.current) return;
                 handleBarcodeSubmit(decodedText);
             },
-            (error) => {
+            () => {
                 // Ignore ongoing errors due to no code found
             }
         ).catch((err) => {
@@ -57,9 +57,10 @@ const Scanner = () => {
                 html5QrCode.stop().catch(console.error);
             }
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sessionId, navigate]);
 
-    const handleBarcodeSubmit = async (barcodeData) => {
+    async function handleBarcodeSubmit(barcodeData) {
         if (isScanningRef.current) return;
         
         isScanningRef.current = true;
@@ -108,7 +109,7 @@ const Scanner = () => {
             await api.post('/attendance/end-session', { sessionId });
             localStorage.removeItem('currentSessionId');
             navigate(`/report/${sessionId}`);
-        } catch (err) {
+        } catch {
             alert('Failed to end session');
         }
     };
