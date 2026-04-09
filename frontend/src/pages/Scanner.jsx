@@ -1,8 +1,8 @@
 import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { BrowserMultiFormatReader } from '@zxing/library';
+import { Scanner as ModernScanner } from '@yudiel/react-qr-scanner';
 import api from '../services/api';
-import { CheckCircle, XCircle, StopCircle, Keyboard, Camera, Loader2 } from 'lucide-react';
+import { CheckCircle, XCircle, StopCircle, Keyboard } from 'lucide-react';
 
 const Scanner = () => {
     const navigate = useNavigate();
@@ -10,10 +10,7 @@ const Scanner = () => {
     const [scannedStudents, setScannedStudents] = useState([]);
     const [scanMessage, setScanMessage] = useState(null);
     const [manualBarcode, setManualBarcode] = useState('');
-    const [isScanningPhoto, setIsScanningPhoto] = useState(false);
-    
-    // Maintain strict locking so we don't double submit
-    const isSubmittingRef = useRef(false);
+    const isScanningRef = useRef(false);
 
     useEffect(() => {
         if (!sessionId) {
@@ -22,8 +19,8 @@ const Scanner = () => {
     }, [sessionId, navigate]);
 
     async function handleBarcodeSubmit(barcodeData) {
-        if (isSubmittingRef.current) return;
-        isSubmittingRef.current = true;
+        if (isScanningRef.current) return;
+        isScanningRef.current = true;
 
         try {
             const { data } = await api.post('/attendance/scan', {
@@ -43,34 +40,9 @@ const Scanner = () => {
 
         setTimeout(() => {
             setScanMessage(null);
-            isSubmittingRef.current = false;
-        }, 1500);
+            isScanningRef.current = false;
+        }, 1500); // Wait 1.5 seconds before allowing the next scan
     }
-
-    const handleImageCapture = async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-
-        setIsScanningPhoto(true);
-        setScanMessage(null);
-
-        const codeReader = new BrowserMultiFormatReader();
-        const imageUrl = URL.createObjectURL(file);
-        
-        try {
-            const result = await codeReader.decodeFromImageUrl(imageUrl);
-            // Decode successful!
-            handleBarcodeSubmit(result.getText());
-        } catch (err) {
-            console.error("Barcode Read Error:", err);
-            setScanMessage({ type: 'error', text: 'No barcode detected in that photo. Please try again.' });
-        } finally {
-            setIsScanningPhoto(false);
-            URL.revokeObjectURL(imageUrl); // Free memory
-            // Reset input so they can snap again immediately
-            e.target.value = '';
-        }
-    };
 
     const handleManualSubmit = (e) => {
         e.preventDefault();
@@ -89,22 +61,14 @@ const Scanner = () => {
         }
     };
 
-    // Auto-remove scan message
-    useEffect(() => {
-        if (scanMessage) {
-            const timer = setTimeout(() => setScanMessage(null), 3000);
-            return () => clearTimeout(timer);
-        }
-    }, [scanMessage]);
-
     return (
         <div className="min-h-screen bg-[#F0F4FC] p-4 lg:p-8 flex flex-col md:flex-row gap-6">
             {/* Left Col: Scanner UI */}
             <div className="flex-1 bg-white p-6 rounded-3xl shadow-sm border border-gray-100 flex flex-col">
                 <div className="flex justify-between items-center mb-6">
                     <div>
-                        <h2 className="text-2xl font-bold font-['Manrope'] text-gray-800">Snapshot Scanner</h2>
-                        <p className="text-gray-500 font-['Inter'] text-sm">Uses your phone's native camera app for perfect focus.</p>
+                        <h2 className="text-2xl font-bold font-['Manrope'] text-gray-800">Smart Scanner</h2>
+                        <p className="text-gray-500 font-['Inter'] text-sm">Align the barcode in the green box.</p>
                     </div>
                     <button 
                         onClick={handleEndSession} 
@@ -114,35 +78,29 @@ const Scanner = () => {
                     </button>
                 </div>
                 
-                <div className="relative bg-gray-50 rounded-2xl flex items-center justify-center border-2 border-dashed border-gray-300 min-h-[350px] p-6 transition hover:bg-gray-100">
-                    {isScanningPhoto ? (
-                        <div className="flex flex-col items-center justify-center">
-                            <Loader2 size={48} className="text-blue-500 animate-spin mb-4" />
-                            <p className="text-lg font-bold text-gray-700">Analyzing Photo...</p>
-                            <p className="text-sm text-gray-500">Searching for barcode data</p>
-                        </div>
-                    ) : (
-                        <label htmlFor="camera-capture" className="cursor-pointer flex flex-col items-center justify-center w-full h-full">
-                            <div className="w-24 h-24 bg-blue-100 rounded-full flex items-center justify-center mb-6 shadow-inner">
-                                <Camera size={48} className="text-blue-600" />
-                            </div>
-                            <span className="text-xl font-bold text-gray-800 mb-2">Tap to Snap Photo</span>
-                            <span className="text-sm text-gray-500 text-center max-w-xs">Takes a high-resolution, perfectly focused picture of the barcode to read instantly.</span>
-                        </label>
-                    )}
-
-                    <input 
-                        id="camera-capture"
-                        type="file" 
-                        accept="image/*" 
-                        capture="environment" 
-                        className="hidden"
-                        onChange={handleImageCapture}
-                        disabled={isScanningPhoto || isSubmittingRef.current}
-                    />
+                <div className="relative bg-black rounded-2xl overflow-hidden flex items-center justify-center border-2 border-gray-200 min-h-[350px]">
                     
+                    <ModernScanner 
+                        onScan={(result) => {
+                            if (result && result.length > 0) {
+                                // @yudiel/react-qr-scanner returns an array of objects: { rawValue: string }
+                                handleBarcodeSubmit(result[0].rawValue);
+                            }
+                        }}
+                        formats={['code_128', 'code_39', 'ean_13']}
+                        scanDelay={1000} // Don't burn CPU trying 60fps
+                        allowMultiple={false}
+                        components={{
+                            tracker: true, // Draws a bounding box over detected barcodes!
+                            audio: false
+                        }}
+                        styles={{
+                            container: { width: '100%', height: '100%', aspectRatio: '1/1' }
+                        }}
+                    />
+
                     {/* Floating Toast Notification inside Scanner */}
-                    {scanMessage && !isScanningPhoto && (
+                    {scanMessage && (
                         <div className={`absolute top-4 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full text-white font-bold shadow-xl flex items-center gap-2 transform transition-all z-10 w-[90%] md:w-auto text-center ${scanMessage.type === 'success' ? 'bg-green-500' : 'bg-red-500'}`}>
                             {scanMessage.type === 'success' ? <CheckCircle size={20}/> : <XCircle size={20}/>}
                             <span className="truncate">{scanMessage.text}</span>
@@ -158,13 +116,12 @@ const Scanner = () => {
                     <form onSubmit={handleManualSubmit} className="flex gap-3">
                         <input 
                             type="text" 
-                            placeholder="Enter barcode ID manually..." 
+                            placeholder="Enter ID artificially (e.g. 17672)" 
                             className="flex-1 px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
                             value={manualBarcode}
                             onChange={(e) => setManualBarcode(e.target.value)}
-                            disabled={isSubmittingRef.current}
                         />
-                        <button type="submit" disabled={isSubmittingRef.current} className="px-6 py-3 bg-gray-900 hover:bg-black disabled:opacity-50 text-white font-bold rounded-xl transition">
+                        <button type="submit" className="px-6 py-3 bg-gray-900 hover:bg-black text-white font-bold rounded-xl transition">
                             Submit
                         </button>
                     </form>
