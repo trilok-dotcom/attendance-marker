@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Scanner as ModernScanner } from '@yudiel/react-qr-scanner';
+import Quagga from '@ericblade/quagga2';
 import api from '../services/api';
 import { CheckCircle, XCircle, StopCircle, Keyboard } from 'lucide-react';
 
@@ -10,12 +10,58 @@ const Scanner = () => {
     const [scannedStudents, setScannedStudents] = useState([]);
     const [scanMessage, setScanMessage] = useState(null);
     const [manualBarcode, setManualBarcode] = useState('');
+    
+    const scannerRef = useRef(null);
     const isScanningRef = useRef(false);
 
     useEffect(() => {
         if (!sessionId) {
             navigate('/');
+            return;
         }
+
+        Quagga.init({
+            inputStream: {
+                name: "Live",
+                type: "LiveStream",
+                target: scannerRef.current,
+                constraints: {
+                    facingMode: "environment",
+                    width: { min: 1280, ideal: 1920 }, // High-Res requested
+                    height: { min: 720, ideal: 1080 }
+                }
+            },
+            locator: {
+                patchSize: "medium", // 'medium' is balanced, 'large' is better for dense/distant barcodes
+                halfSample: true     // Speed optimization
+            },
+            numOfWorkers: navigator.hardwareConcurrency || 4,
+            decoder: {
+                readers: ["code_128_reader", "code_39_reader"]
+            },
+            locate: true // Turns on localization (critical for finding codes without quiet zones)
+        }, function(err) {
+            if (err) {
+                console.error("Quagga Init Error:", err);
+                return;
+            }
+            Quagga.start();
+        });
+
+        const onDetected = (result) => {
+            const code = result.codeResult && result.codeResult.code;
+            if (code && !isScanningRef.current) {
+                handleBarcodeSubmit(code);
+            }
+        };
+
+        Quagga.onDetected(onDetected);
+
+        return () => {
+            Quagga.offDetected(onDetected);
+            Quagga.stop();
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sessionId, navigate]);
 
     async function handleBarcodeSubmit(barcodeData) {
@@ -34,14 +80,14 @@ const Scanner = () => {
         } catch (err) {
             setScanMessage({ 
                 type: 'error', 
-                text: err.response?.data?.message || 'Error marking attendance' 
+                text: err.response?.data?.message || 'Error scanning barcode' 
             });
         }
 
         setTimeout(() => {
             setScanMessage(null);
             isScanningRef.current = false;
-        }, 1500); // Wait 1.5 seconds before allowing the next scan
+        }, 1500);
     }
 
     const handleManualSubmit = (e) => {
@@ -53,6 +99,7 @@ const Scanner = () => {
 
     const handleEndSession = async () => {
         try {
+            Quagga.stop();
             await api.post('/attendance/end-session', { sessionId });
             localStorage.removeItem('currentSessionId');
             navigate(`/report/${sessionId}`);
@@ -61,14 +108,22 @@ const Scanner = () => {
         }
     };
 
+    // Auto-remove scan message
+    useEffect(() => {
+        if (scanMessage) {
+            const timer = setTimeout(() => setScanMessage(null), 1500);
+            return () => clearTimeout(timer);
+        }
+    }, [scanMessage]);
+
     return (
         <div className="min-h-screen bg-[#F0F4FC] p-4 lg:p-8 flex flex-col md:flex-row gap-6">
             {/* Left Col: Scanner UI */}
             <div className="flex-1 bg-white p-6 rounded-3xl shadow-sm border border-gray-100 flex flex-col">
                 <div className="flex justify-between items-center mb-6">
                     <div>
-                        <h2 className="text-2xl font-bold font-['Manrope'] text-gray-800">Smart Scanner</h2>
-                        <p className="text-gray-500 font-['Inter'] text-sm">Align the barcode in the green box.</p>
+                        <h2 className="text-2xl font-bold font-['Manrope'] text-gray-800">Quagga Scanner</h2>
+                        <p className="text-gray-500 font-['Inter'] text-sm">Engineered for difficult 1D barcodes.</p>
                     </div>
                     <button 
                         onClick={handleEndSession} 
@@ -78,30 +133,22 @@ const Scanner = () => {
                     </button>
                 </div>
                 
-                <div className="relative bg-black rounded-2xl overflow-hidden flex items-center justify-center border-2 border-gray-200 min-h-[350px]">
+                <div className="relative bg-black rounded-2xl overflow-hidden flex items-center justify-center border-2 border-gray-200 min-h-[350px] md:h-[400px]">
                     
-                    <ModernScanner 
-                        onScan={(result) => {
-                            if (result && result.length > 0) {
-                                // @yudiel/react-qr-scanner returns an array of objects: { rawValue: string }
-                                handleBarcodeSubmit(result[0].rawValue);
-                            }
-                        }}
-                        formats={['code_128', 'code_39', 'ean_13']}
-                        scanDelay={1000} // Don't burn CPU trying 60fps
-                        allowMultiple={false}
-                        components={{
-                            tracker: true, // Draws a bounding box over detected barcodes!
-                            audio: false
-                        }}
-                        styles={{
-                            container: { width: '100%', height: '100%', aspectRatio: '1/1' }
-                        }}
-                    />
+                    {/* Quagga injects a <video> and <canvas> directly into this div */}
+                    <div 
+                        ref={scannerRef} 
+                        className="absolute inset-0 w-full h-full [&>video]:w-full [&>video]:h-full [&>video]:object-cover [&>canvas]:absolute [&>canvas]:inset-0 [&>canvas]:w-full [&>canvas]:h-full [&>canvas]:object-cover"
+                    ></div>
+                    
+                    {/* Targeting Box */}
+                    <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                        <div className="w-[80%] h-[30%] border-2 border-green-500 rounded-xl relative shadow-[0_0_0_4000px_rgba(0,0,0,0.4)]"></div>
+                    </div>
 
                     {/* Floating Toast Notification inside Scanner */}
                     {scanMessage && (
-                        <div className={`absolute top-4 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full text-white font-bold shadow-xl flex items-center gap-2 transform transition-all z-10 w-[90%] md:w-auto text-center ${scanMessage.type === 'success' ? 'bg-green-500' : 'bg-red-500'}`}>
+                        <div className={`absolute top-4 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full text-white font-bold shadow-xl flex items-center gap-2 transform transition-all z-20 w-[90%] md:w-auto text-center ${scanMessage.type === 'success' ? 'bg-green-500' : 'bg-red-500'}`}>
                             {scanMessage.type === 'success' ? <CheckCircle size={20}/> : <XCircle size={20}/>}
                             <span className="truncate">{scanMessage.text}</span>
                         </div>
@@ -116,7 +163,7 @@ const Scanner = () => {
                     <form onSubmit={handleManualSubmit} className="flex gap-3">
                         <input 
                             type="text" 
-                            placeholder="Enter ID artificially (e.g. 17672)" 
+                            placeholder="If camera fails, type 17672..." 
                             className="flex-1 px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
                             value={manualBarcode}
                             onChange={(e) => setManualBarcode(e.target.value)}
