@@ -1,8 +1,8 @@
 import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import Quagga from '@ericblade/quagga2';
+import Tesseract from 'tesseract.js';
 import api from '../services/api';
-import { CheckCircle, XCircle, StopCircle, Keyboard } from 'lucide-react';
+import { CheckCircle, XCircle, StopCircle, Keyboard, Camera, Loader2 } from 'lucide-react';
 
 const Scanner = () => {
     const navigate = useNavigate();
@@ -10,63 +10,20 @@ const Scanner = () => {
     const [scannedStudents, setScannedStudents] = useState([]);
     const [scanMessage, setScanMessage] = useState(null);
     const [manualBarcode, setManualBarcode] = useState('');
+    const [isScanningPhoto, setIsScanningPhoto] = useState(false);
     
-    const scannerRef = useRef(null);
-    const isScanningRef = useRef(false);
+    // Maintain strict locking so we don't double submit
+    const isSubmittingRef = useRef(false);
 
     useEffect(() => {
         if (!sessionId) {
             navigate('/');
-            return;
         }
-
-        Quagga.init({
-            inputStream: {
-                name: "Live",
-                type: "LiveStream",
-                target: scannerRef.current,
-                constraints: {
-                    facingMode: "environment",
-                    width: { min: 1280, ideal: 1920 }, // High-Res requested
-                    height: { min: 720, ideal: 1080 }
-                }
-            },
-            locator: {
-                patchSize: "medium", // 'medium' is balanced, 'large' is better for dense/distant barcodes
-                halfSample: true     // Speed optimization
-            },
-            numOfWorkers: navigator.hardwareConcurrency || 4,
-            decoder: {
-                readers: ["code_128_reader", "code_39_reader"]
-            },
-            locate: true // Turns on localization (critical for finding codes without quiet zones)
-        }, function(err) {
-            if (err) {
-                console.error("Quagga Init Error:", err);
-                return;
-            }
-            Quagga.start();
-        });
-
-        const onDetected = (result) => {
-            const code = result.codeResult && result.codeResult.code;
-            if (code && !isScanningRef.current) {
-                handleBarcodeSubmit(code);
-            }
-        };
-
-        Quagga.onDetected(onDetected);
-
-        return () => {
-            Quagga.offDetected(onDetected);
-            Quagga.stop();
-        };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sessionId, navigate]);
 
     async function handleBarcodeSubmit(barcodeData) {
-        if (isScanningRef.current) return;
-        isScanningRef.current = true;
+        if (isSubmittingRef.current) return;
+        isSubmittingRef.current = true;
 
         try {
             const { data } = await api.post('/attendance/scan', {
@@ -74,21 +31,51 @@ const Scanner = () => {
                 sessionId
             });
             
-            setScanMessage({ type: 'success', text: `Marked: ${data.student.name}` });
+            setScanMessage({ type: 'success', text: `Marked: ${data.student.name} (${barcodeData})` });
             setScannedStudents(prev => [data.student, ...prev]);
             
         } catch (err) {
             setScanMessage({ 
                 type: 'error', 
-                text: err.response?.data?.message || 'Error scanning barcode' 
+                text: err.response?.data?.message || `Error mapping ID: ${barcodeData}` 
             });
         }
 
         setTimeout(() => {
             setScanMessage(null);
-            isScanningRef.current = false;
+            isSubmittingRef.current = false;
         }, 1500);
     }
+
+    const handleImageCapture = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        setIsScanningPhoto(true);
+        setScanMessage(null);
+
+        try {
+            const result = await Tesseract.recognize(file, 'eng');
+            const text = result.data.text;
+            console.log("OCR Extracted Text:", text);
+
+            // Regex: Looks strictly for a standalone 5-digit number
+            const match = text.match(/(?:^|\D)(\d{5})(?=\D|$)/);
+
+            if (match && match[1]) {
+                const extractedId = match[1];
+                handleBarcodeSubmit(extractedId);
+            } else {
+                setScanMessage({ type: 'error', text: 'No 5-digit ID found in that photo. Please try again or type it manually.' });
+            }
+        } catch (err) {
+            console.error("OCR Read Error:", err);
+            setScanMessage({ type: 'error', text: 'Failed to process image.' });
+        } finally {
+            setIsScanningPhoto(false);
+            e.target.value = ''; // Reset input to allow immediate re-scans
+        }
+    };
 
     const handleManualSubmit = (e) => {
         e.preventDefault();
@@ -99,7 +86,6 @@ const Scanner = () => {
 
     const handleEndSession = async () => {
         try {
-            Quagga.stop();
             await api.post('/attendance/end-session', { sessionId });
             localStorage.removeItem('currentSessionId');
             navigate(`/report/${sessionId}`);
@@ -110,11 +96,11 @@ const Scanner = () => {
 
     // Auto-remove scan message
     useEffect(() => {
-        if (scanMessage) {
-            const timer = setTimeout(() => setScanMessage(null), 1500);
+        if (scanMessage && !isScanningPhoto) {
+            const timer = setTimeout(() => setScanMessage(null), 3000);
             return () => clearTimeout(timer);
         }
-    }, [scanMessage]);
+    }, [scanMessage, isScanningPhoto]);
 
     return (
         <div className="min-h-screen bg-[#F0F4FC] p-4 lg:p-8 flex flex-col md:flex-row gap-6">
@@ -122,8 +108,8 @@ const Scanner = () => {
             <div className="flex-1 bg-white p-6 rounded-3xl shadow-sm border border-gray-100 flex flex-col">
                 <div className="flex justify-between items-center mb-6">
                     <div>
-                        <h2 className="text-2xl font-bold font-['Manrope'] text-gray-800">Quagga Scanner</h2>
-                        <p className="text-gray-500 font-['Inter'] text-sm">Engineered for difficult 1D barcodes.</p>
+                        <h2 className="text-2xl font-bold font-['Manrope'] text-gray-800">OCR Scanner</h2>
+                        <p className="text-gray-500 font-['Inter'] text-sm">Snap a photo to read the 5-digit ID automatically.</p>
                     </div>
                     <button 
                         onClick={handleEndSession} 
@@ -133,22 +119,36 @@ const Scanner = () => {
                     </button>
                 </div>
                 
-                <div className="relative bg-black rounded-2xl overflow-hidden flex items-center justify-center border-2 border-gray-200 min-h-[350px] md:h-[400px]">
-                    
-                    {/* Quagga injects a <video> and <canvas> directly into this div */}
-                    <div 
-                        ref={scannerRef} 
-                        className="absolute inset-0 w-full h-full [&>video]:w-full [&>video]:h-full [&>video]:object-cover [&>canvas]:absolute [&>canvas]:inset-0 [&>canvas]:w-full [&>canvas]:h-full [&>canvas]:object-cover"
-                    ></div>
-                    
-                    {/* Targeting Box */}
-                    <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                        <div className="w-[80%] h-[30%] border-2 border-green-500 rounded-xl relative shadow-[0_0_0_4000px_rgba(0,0,0,0.4)]"></div>
-                    </div>
+                <div className="relative bg-gray-50 rounded-2xl flex items-center justify-center border-2 border-dashed border-gray-300 min-h-[350px] p-6 transition hover:bg-gray-100">
+                    {isScanningPhoto ? (
+                        <div className="flex flex-col items-center justify-center">
+                            <Loader2 size={48} className="text-blue-500 animate-spin mb-4" />
+                            <p className="text-lg font-bold text-gray-700">Reading Text...</p>
+                            <p className="text-sm text-gray-500">Searching for ID number</p>
+                        </div>
+                    ) : (
+                        <label htmlFor="camera-capture" className="cursor-pointer flex flex-col items-center justify-center w-full h-full">
+                            <div className="w-24 h-24 bg-blue-100 rounded-full flex items-center justify-center mb-6 shadow-inner">
+                                <Camera size={48} className="text-blue-600" />
+                            </div>
+                            <span className="text-xl font-bold text-gray-800 mb-2">Tap to Snap Photo</span>
+                            <span className="text-sm text-gray-500 text-center max-w-xs">Take a clear picture of the physical ID card and the system will read the 5-digit number automatically.</span>
+                        </label>
+                    )}
 
-                    {/* Floating Toast Notification inside Scanner */}
-                    {scanMessage && (
-                        <div className={`absolute top-4 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full text-white font-bold shadow-xl flex items-center gap-2 transform transition-all z-20 w-[90%] md:w-auto text-center ${scanMessage.type === 'success' ? 'bg-green-500' : 'bg-red-500'}`}>
+                    <input 
+                        id="camera-capture"
+                        type="file" 
+                        accept="image/*" 
+                        capture="environment" 
+                        className="hidden"
+                        onChange={handleImageCapture}
+                        disabled={isScanningPhoto || isSubmittingRef.current}
+                    />
+                    
+                    {/* Floating Toast Notification */}
+                    {scanMessage && !isScanningPhoto && (
+                        <div className={`absolute top-4 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full text-white font-bold shadow-xl flex items-center gap-2 transform transition-all z-10 w-[90%] md:w-auto text-center ${scanMessage.type === 'success' ? 'bg-green-500' : 'bg-red-500'}`}>
                             {scanMessage.type === 'success' ? <CheckCircle size={20}/> : <XCircle size={20}/>}
                             <span className="truncate">{scanMessage.text}</span>
                         </div>
@@ -163,12 +163,13 @@ const Scanner = () => {
                     <form onSubmit={handleManualSubmit} className="flex gap-3">
                         <input 
                             type="text" 
-                            placeholder="If camera fails, type 17672..." 
+                            placeholder="Type 5-digit ID..." 
                             className="flex-1 px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
                             value={manualBarcode}
                             onChange={(e) => setManualBarcode(e.target.value)}
+                            disabled={isSubmittingRef.current}
                         />
-                        <button type="submit" className="px-6 py-3 bg-gray-900 hover:bg-black text-white font-bold rounded-xl transition">
+                        <button type="submit" disabled={isSubmittingRef.current} className="px-6 py-3 bg-gray-900 hover:bg-black disabled:opacity-50 text-white font-bold rounded-xl transition">
                             Submit
                         </button>
                     </form>
