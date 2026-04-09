@@ -22,16 +22,24 @@ const Scanner = () => {
         const html5QrCode = new Html5Qrcode("reader");
         scannerRef.current = html5QrCode;
 
-        // Optimized for 1D Barcodes with higher resolution request
+        // Optimized for 1D Barcodes and mobile screens
         const config = { 
-            fps: 15, 
-            qrbox: { width: 350, height: 100 },
+            fps: 10, 
+            qrbox: (viewfinderWidth, viewfinderHeight) => {
+                // Responsive box to prevent overflowing on small mobile screens
+                const width = Math.min(viewfinderWidth * 0.8, 350);
+                const height = 150; 
+                return { width, height };
+            },
+            disableFlip: true, // Saves CPU and reduces false positives
             formatsToSupport: [
                 Html5QrcodeSupportedFormats.CODE_128,
                 Html5QrcodeSupportedFormats.CODE_39,
-                Html5QrcodeSupportedFormats.EAN_13,
                 Html5QrcodeSupportedFormats.QR_CODE
-            ]
+            ],
+            experimentalFeatures: {
+                useBarCodeDetectorIfSupported: true // Uses ultra-fast native Android scanner if available
+            }
         };
         
         // Request HD camera for better 1D barcode dense line reading
