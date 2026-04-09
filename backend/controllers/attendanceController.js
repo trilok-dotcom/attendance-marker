@@ -41,7 +41,7 @@ const scanAttendance = async (req, res) => {
         return;
     }
 
-    let student = await Student.findOne({ barcodeId, classId: session.classId });
+    let student = await Student.findOne({ barcodeId });
     if (!student) {
         // Auto-create unknown students so any barcode is accepted
         student = await Student.create({
