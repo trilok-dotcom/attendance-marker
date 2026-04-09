@@ -1,8 +1,8 @@
 import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import Tesseract from 'tesseract.js';
+import { createWorker } from 'tesseract.js';
 import api from '../services/api';
-import { CheckCircle, XCircle, StopCircle, Keyboard, Camera, Loader2 } from 'lucide-react';
+import { CheckCircle, XCircle, StopCircle, Keyboard, ScanLine } from 'lucide-react';
 
 const Scanner = () => {
     const navigate = useNavigate();
@@ -10,16 +10,131 @@ const Scanner = () => {
     const [scannedStudents, setScannedStudents] = useState([]);
     const [scanMessage, setScanMessage] = useState(null);
     const [manualBarcode, setManualBarcode] = useState('');
-    const [isScanningPhoto, setIsScanningPhoto] = useState(false);
+    const [isWorkerReady, setIsWorkerReady] = useState(false);
     
-    // Maintain strict locking so we don't double submit
+    // Core Engine Refs
+    const videoRef = useRef(null);
+    const canvasRef = useRef(null);
+    const workerRef = useRef(null);
+    const intervalRef = useRef(null);
+    const streamRef = useRef(null);
+    
+    // Safety Locks
     const isSubmittingRef = useRef(false);
+    const isAnalyzingRef = useRef(false);
 
     useEffect(() => {
         if (!sessionId) {
             navigate('/');
+            return;
         }
+
+        let isMounted = true;
+
+        const initializeEngine = async () => {
+            try {
+                // 1. Boot up Tesseract Worker in the background
+                const worker = await createWorker('eng');
+                if (isMounted) {
+                    workerRef.current = worker;
+                    setIsWorkerReady(true);
+                } else {
+                    worker.terminate();
+                }
+
+                // 2. Request High-Def Camera Stream
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { 
+                        facingMode: 'environment', // Strictly use the back camera
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 }
+                    }
+                });
+                
+                if (isMounted && videoRef.current) {
+                    streamRef.current = stream;
+                    videoRef.current.srcObject = stream;
+                    
+                    // Essential for iOS Safari
+                    videoRef.current.setAttribute('playsinline', true);
+                    await videoRef.current.play();
+
+                    // 3. Start the silent extraction loop once video is playing
+                    beginSilentExtraction();
+                } else {
+                    stream.getTracks().forEach(track => track.stop());
+                }
+            } catch (err) {
+                console.error("Camera/Worker Init Error:", err);
+                if (isMounted) {
+                    setScanMessage({ type: 'error', text: 'Camera access denied or device unsupported.' });
+                }
+            }
+        };
+
+        const beginSilentExtraction = () => {
+            // Grab a frame every 1.5 seconds.
+            // Pushing it faster will freeze mobile processors due to OCR intensity.
+            intervalRef.current = setInterval(extractAndProcessFrame, 1500);
+        };
+
+        initializeEngine();
+
+        // Cleanup: Stop Camera, Worker, and Loop on unmount
+        return () => {
+            isMounted = false;
+            if (intervalRef.current) clearInterval(intervalRef.current);
+            if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
+            if (workerRef.current) workerRef.current.terminate();
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sessionId, navigate]);
+
+    const extractAndProcessFrame = async () => {
+        // Drop the frame if the previous one is still parsing, or if we are submitting to API
+        if (isAnalyzingRef.current || isSubmittingRef.current || !workerRef.current || !videoRef.current || !canvasRef.current) return;
+        
+        isAnalyzingRef.current = true;
+
+        try {
+            const video = videoRef.current;
+            const canvas = canvasRef.current;
+            
+            // Match canvas dims to real video dims
+            if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+            }
+
+            // Draw current video frame onto the hidden canvas
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            // Export the frame
+            const imageUrl = canvas.toDataURL('image/jpeg', 0.8);
+            
+            // Unleash OCR
+            const result = await workerRef.current.recognize(imageUrl);
+            const text = result.data.text;
+            
+            // Console logging to help debug what Tesseract "Sees"
+            if (text.trim().length > 0) {
+                console.log("OCR Seen:", text.replace(/\n/g, ' ')); 
+            }
+
+            // Regex: Looks strictly for an isolated 5-digit number
+            const match = text.match(/(?:^|\D)(\d{5})(?=\D|$)/);
+
+            if (match && match[1]) {
+                const extractedId = match[1];
+                await handleBarcodeSubmit(extractedId);
+            }
+        } catch (err) {
+            console.error("Frame Processing Error:", err);
+        } finally {
+            isAnalyzingRef.current = false;
+        }
+    };
 
     async function handleBarcodeSubmit(barcodeData) {
         if (isSubmittingRef.current) return;
@@ -41,41 +156,12 @@ const Scanner = () => {
             });
         }
 
+        // Wait 2 seconds before unlocking to prevent double-scanning
         setTimeout(() => {
             setScanMessage(null);
             isSubmittingRef.current = false;
-        }, 1500);
+        }, 2000);
     }
-
-    const handleImageCapture = async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-
-        setIsScanningPhoto(true);
-        setScanMessage(null);
-
-        try {
-            const result = await Tesseract.recognize(file, 'eng');
-            const text = result.data.text;
-            console.log("OCR Extracted Text:", text);
-
-            // Regex: Looks strictly for a standalone 5-digit number
-            const match = text.match(/(?:^|\D)(\d{5})(?=\D|$)/);
-
-            if (match && match[1]) {
-                const extractedId = match[1];
-                handleBarcodeSubmit(extractedId);
-            } else {
-                setScanMessage({ type: 'error', text: 'No 5-digit ID found in that photo. Please try again or type it manually.' });
-            }
-        } catch (err) {
-            console.error("OCR Read Error:", err);
-            setScanMessage({ type: 'error', text: 'Failed to process image.' });
-        } finally {
-            setIsScanningPhoto(false);
-            e.target.value = ''; // Reset input to allow immediate re-scans
-        }
-    };
 
     const handleManualSubmit = (e) => {
         e.preventDefault();
@@ -94,22 +180,23 @@ const Scanner = () => {
         }
     };
 
-    // Auto-remove scan message
-    useEffect(() => {
-        if (scanMessage && !isScanningPhoto) {
-            const timer = setTimeout(() => setScanMessage(null), 3000);
-            return () => clearTimeout(timer);
-        }
-    }, [scanMessage, isScanningPhoto]);
-
     return (
         <div className="min-h-screen bg-[#F0F4FC] p-4 lg:p-8 flex flex-col md:flex-row gap-6">
+            
+            {/* Hidden Canvas used for isolating frames perfectly */}
+            <canvas ref={canvasRef} className="hidden" />
+
             {/* Left Col: Scanner UI */}
             <div className="flex-1 bg-white p-6 rounded-3xl shadow-sm border border-gray-100 flex flex-col">
                 <div className="flex justify-between items-center mb-6">
                     <div>
-                        <h2 className="text-2xl font-bold font-['Manrope'] text-gray-800">OCR Scanner</h2>
-                        <p className="text-gray-500 font-['Inter'] text-sm">Snap a photo to read the 5-digit ID automatically.</p>
+                        <div className="flex items-center gap-3">
+                            <h2 className="text-2xl font-bold font-['Manrope'] text-gray-800">Live Feed OCR</h2>
+                            {!isWorkerReady && (
+                                <span className="text-xs font-bold bg-amber-100 text-amber-700 px-2 py-1 rounded-full animate-pulse">Booting Engine...</span>
+                            )}
+                        </div>
+                        <p className="text-gray-500 font-['Inter'] text-sm">Focus the ID number perfectly in the camera.</p>
                     </div>
                     <button 
                         onClick={handleEndSession} 
@@ -119,36 +206,26 @@ const Scanner = () => {
                     </button>
                 </div>
                 
-                <div className="relative bg-gray-50 rounded-2xl flex items-center justify-center border-2 border-dashed border-gray-300 min-h-[350px] p-6 transition hover:bg-gray-100">
-                    {isScanningPhoto ? (
-                        <div className="flex flex-col items-center justify-center">
-                            <Loader2 size={48} className="text-blue-500 animate-spin mb-4" />
-                            <p className="text-lg font-bold text-gray-700">Reading Text...</p>
-                            <p className="text-sm text-gray-500">Searching for ID number</p>
-                        </div>
-                    ) : (
-                        <label htmlFor="camera-capture" className="cursor-pointer flex flex-col items-center justify-center w-full h-full">
-                            <div className="w-24 h-24 bg-blue-100 rounded-full flex items-center justify-center mb-6 shadow-inner">
-                                <Camera size={48} className="text-blue-600" />
-                            </div>
-                            <span className="text-xl font-bold text-gray-800 mb-2">Tap to Snap Photo</span>
-                            <span className="text-sm text-gray-500 text-center max-w-xs">Take a clear picture of the physical ID card and the system will read the 5-digit number automatically.</span>
-                        </label>
-                    )}
-
-                    <input 
-                        id="camera-capture"
-                        type="file" 
-                        accept="image/*" 
-                        capture="environment" 
-                        className="hidden"
-                        onChange={handleImageCapture}
-                        disabled={isScanningPhoto || isSubmittingRef.current}
+                <div className="relative bg-black rounded-2xl overflow-hidden shadow-inner flex items-center justify-center border-2 border-gray-200 min-h-[350px] md:h-[400px]">
+                    
+                    {/* The Live Video Player */}
+                    <video 
+                        ref={videoRef} 
+                        className="absolute inset-0 w-full h-full object-cover"
+                        muted 
+                        playsInline
                     />
+
+                    {/* Laser Targeting Graphic */}
+                    <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                        <div className="w-[70%] h-[20%] border-2 border-blue-500/50 rounded-xl relative shadow-[0_0_0_4000px_rgba(0,0,0,0.6)] flex items-center justify-center">
+                            <ScanLine size={48} className="text-blue-500/40 animate-pulse" />
+                        </div>
+                    </div>
                     
                     {/* Floating Toast Notification */}
-                    {scanMessage && !isScanningPhoto && (
-                        <div className={`absolute top-4 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full text-white font-bold shadow-xl flex items-center gap-2 transform transition-all z-10 w-[90%] md:w-auto text-center ${scanMessage.type === 'success' ? 'bg-green-500' : 'bg-red-500'}`}>
+                    {scanMessage && (
+                        <div className={`absolute top-4 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full text-white font-bold shadow-xl flex items-center gap-2 transform transition-all z-20 w-[90%] md:w-auto text-center ${scanMessage.type === 'success' ? 'bg-green-500' : 'bg-red-500'}`}>
                             {scanMessage.type === 'success' ? <CheckCircle size={20}/> : <XCircle size={20}/>}
                             <span className="truncate">{scanMessage.text}</span>
                         </div>
@@ -163,7 +240,7 @@ const Scanner = () => {
                     <form onSubmit={handleManualSubmit} className="flex gap-3">
                         <input 
                             type="text" 
-                            placeholder="Type 5-digit ID..." 
+                            placeholder="Type ID naturally if scanning fails..." 
                             className="flex-1 px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
                             value={manualBarcode}
                             onChange={(e) => setManualBarcode(e.target.value)}
