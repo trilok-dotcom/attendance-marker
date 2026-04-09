@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
+import { useZxing } from 'react-zxing';
 import api from '../services/api';
 import { CheckCircle, XCircle, StopCircle, Keyboard } from 'lucide-react';
 
@@ -10,72 +10,18 @@ const Scanner = () => {
     const [scannedStudents, setScannedStudents] = useState([]);
     const [scanMessage, setScanMessage] = useState(null);
     const [manualBarcode, setManualBarcode] = useState('');
-    const scannerRef = useRef(null);
     const isScanningRef = useRef(false);
 
     useEffect(() => {
         if (!sessionId) {
             navigate('/');
-            return;
         }
-
-        const html5QrCode = new Html5Qrcode("reader");
-        scannerRef.current = html5QrCode;
-
-        // Optimized for 1D Barcodes and mobile screens
-        const config = { 
-            fps: 10, 
-            qrbox: (viewfinderWidth, viewfinderHeight) => {
-                // Responsive box to prevent overflowing on small mobile screens
-                const width = Math.min(viewfinderWidth * 0.8, 350);
-                const height = 150; 
-                return { width, height };
-            },
-            disableFlip: true, // Saves CPU and reduces false positives
-            formatsToSupport: [
-                Html5QrcodeSupportedFormats.CODE_128,
-                Html5QrcodeSupportedFormats.CODE_39,
-                Html5QrcodeSupportedFormats.QR_CODE
-            ],
-            experimentalFeatures: {
-                useBarCodeDetectorIfSupported: true // Uses ultra-fast native Android scanner if available
-            }
-        };
-        
-        // Request HD camera for better 1D barcode dense line reading
-        const cameraConfig = { facingMode: "environment" };
-
-        html5QrCode.start(
-            cameraConfig,
-            config,
-            async (decodedText) => {
-                if (isScanningRef.current) return;
-                handleBarcodeSubmit(decodedText);
-            },
-            () => {
-                // Ignore ongoing errors due to no code found
-            }
-        ).catch((err) => {
-            console.error("Failed to start scanner", err);
-            // Ignore if it's just camera access denied, they can use manual entry
-        });
-
-        return () => {
-            if (html5QrCode.isScanning) {
-                html5QrCode.stop().catch(console.error);
-            }
-        };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sessionId, navigate]);
 
     async function handleBarcodeSubmit(barcodeData) {
         if (isScanningRef.current) return;
         
         isScanningRef.current = true;
-        
-        if (scannerRef.current && scannerRef.current.getState() === 2) {
-            scannerRef.current.pause(true);
-        }
 
         try {
             const { data } = await api.post('/attendance/scan', {
@@ -95,12 +41,18 @@ const Scanner = () => {
 
         setTimeout(() => {
             setScanMessage(null);
-            if (scannerRef.current && scannerRef.current.getState() === 3) {
-                scannerRef.current.resume();
-            }
             isScanningRef.current = false;
         }, 1500);
-    };
+    }
+
+    const { ref } = useZxing({
+        onDecodeResult(result) {
+            handleBarcodeSubmit(result.getText());
+        },
+        onError() {
+            // Ignore ongoing frame mismatch errors natively
+        }
+    });
 
     const handleManualSubmit = (e) => {
         e.preventDefault();
@@ -111,9 +63,6 @@ const Scanner = () => {
 
     const handleEndSession = async () => {
         try {
-            if (scannerRef.current && scannerRef.current.isScanning) {
-                await scannerRef.current.stop();
-            }
             await api.post('/attendance/end-session', { sessionId });
             localStorage.removeItem('currentSessionId');
             navigate(`/report/${sessionId}`);
@@ -148,7 +97,7 @@ const Scanner = () => {
                 </div>
                 
                 <div className="relative bg-gray-50 rounded-2xl overflow-hidden flex items-center justify-center border-2 border-dashed border-gray-200 min-h-[350px]">
-                    <div id="reader" className="w-full max-w-lg mx-auto overflow-hidden rounded-xl"></div>
+                    <video ref={ref} className="w-full h-full object-cover rounded-xl" />
                     
                     {/* Floating Toast Notification inside Scanner */}
                     {scanMessage && (
