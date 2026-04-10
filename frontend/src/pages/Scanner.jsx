@@ -35,6 +35,13 @@ const Scanner = () => {
             try {
                 // 1. Boot up Tesseract Worker in the background
                 const worker = await createWorker('eng');
+                
+                // Optimize Tesseract for lightning-fast number extraction
+                await worker.setParameters({
+                    tessedit_char_whitelist: '0123456789',
+                    tessedit_pageseg_mode: '7', // Treat the image as a single text line
+                });
+
                 if (isMounted) {
                     workerRef.current = worker;
                     setIsWorkerReady(true);
@@ -100,15 +107,21 @@ const Scanner = () => {
             const video = videoRef.current;
             const canvas = canvasRef.current;
             
-            // Match canvas dims to real video dims
-            if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
+            // Define targeted Laser Area to perfectly match the CSS guide (70% width, 20% height centered)
+            const cropWidth = video.videoWidth * 0.7;
+            const cropHeight = video.videoHeight * 0.2;
+            const cropX = (video.videoWidth - cropWidth) / 2;
+            const cropY = (video.videoHeight - cropHeight) / 2;
+
+            // Make the canvas ONLY as big as the crop area. This makes it 10x smaller for Tesseract.
+            if (canvas.width !== cropWidth || canvas.height !== cropHeight) {
+                canvas.width = cropWidth;
+                canvas.height = cropHeight;
             }
 
-            // Draw current video frame onto the hidden canvas
+            // Draw ONLY the cropped window onto the canvas
             const ctx = canvas.getContext('2d');
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            ctx.drawImage(video, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
             
             // Export the frame
             const imageUrl = canvas.toDataURL('image/jpeg', 0.8);
@@ -181,13 +194,30 @@ const Scanner = () => {
     };
 
     return (
-        <div className="min-h-screen bg-[#F0F4FC] p-4 lg:p-8 flex flex-col md:flex-row gap-6">
+        <div className="min-h-screen bg-[#F0F4FC] p-4 lg:p-8 flex flex-col">
             
-            {/* Hidden Canvas used for isolating frames perfectly */}
-            <canvas ref={canvasRef} className="hidden" />
+            {/* Header / College Details Placeholder */}
+            <div className="bg-white p-4 rounded-3xl shadow-sm border border-gray-100 flex items-center justify-between mb-6">
+                <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 font-bold text-xl">
+                        C
+                    </div>
+                    <div>
+                        <h1 className="text-xl font-bold font-['Manrope'] text-gray-800">Your College Name Here</h1>
+                        <p className="text-xs text-gray-500 font-['Inter']">Department / Tagline here</p>
+                    </div>
+                </div>
+                <div className="hidden md:block">
+                    <span className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold animate-pulse">Live OCR Active</span>
+                </div>
+            </div>
 
-            {/* Left Col: Scanner UI */}
-            <div className="flex-1 bg-white p-6 rounded-3xl shadow-sm border border-gray-100 flex flex-col">
+            <div className="flex flex-col md:flex-row gap-6 flex-1">
+                {/* Hidden Canvas used for isolating frames perfectly */}
+                <canvas ref={canvasRef} className="hidden" />
+
+                {/* Left Col: Scanner UI */}
+                <div className="flex-1 bg-white p-6 rounded-3xl shadow-sm border border-gray-100 flex flex-col justify-between">
                 <div className="flex justify-between items-center mb-6">
                     <div>
                         <div className="flex items-center gap-3">
@@ -273,6 +303,8 @@ const Scanner = () => {
                         ))
                     )}
                 </div>
+            </div>
+            
             </div>
         </div>
     );
